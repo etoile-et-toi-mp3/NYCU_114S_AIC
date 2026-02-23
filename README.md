@@ -2,8 +2,7 @@
 
 ## Background
 
-This is a repository made by etoile_et_toi.mp3 during the second semester of the 114 academic year (Feb. 2026 ~ Jun. 2026). This repository is primarily dedicated to the "Artificial Intelligence Capstone" course, which is instructed by A.P. Yi-Ting Chen (陳奕廷
-) at National Yang Ming Chiao Tung University, Taiwan.
+This is a repository made by etoile_et_toi.mp3 during the second semester of the 114 academic year (Feb. 2026 ~ Jun. 2026). This repository is primarily dedicated to the "Artificial Intelligence Capstone" course, which is instructed by A.P. Yi-Ting Chen (陳奕廷) at National Yang Ming Chiao Tung University, Taiwan.
 
 ## Purpose
 
