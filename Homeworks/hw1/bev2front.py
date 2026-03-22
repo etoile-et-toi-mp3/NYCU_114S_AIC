@@ -22,6 +22,10 @@ class Projection(object):
         cam_bev = [0.0, 2.5, 0.0]
         cam_front = [0.0, 1.0, 0.0]
 
+        pitch = -np.pi/2
+        yaw   = 0  
+        roll  = 0
+
         # calcaulte parameters
         center_x = self.width / 2
         center_y = self.height / 2
@@ -32,7 +36,7 @@ class Projection(object):
 
         # 2. project the points to the floor 
         for p in self.points:
-            # first, we assume that the camera is looking straight down
+            # first, we assume that the camera is looking horizontally
             # then this is a 3d vector starting from the pixel on the sensor plane and pointing towards the lens center
             from_pixel_to_pinhole_x = center_x - p[0]
             from_pixel_to_pinhole_y = center_y - p[1]
@@ -41,10 +45,6 @@ class Projection(object):
             # we should revert x and y here, but (see line 90)
             
             # Rotate ray to World Space using ONLY the BEV camera's absolute orientation 
-            pitch = -np.pi/2
-            yaw   = 0  
-            roll  = 0  
-            
             # 1. Pitch (X-axis)
             x1 = from_pixel_to_pinhole_x
             y1 = from_pixel_to_pinhole_y * np.cos(pitch) - from_pixel_to_pinhole_z * np.sin(pitch)
@@ -87,7 +87,7 @@ class Projection(object):
             u_front = center_x + front_cam_x
             v_front = center_y + front_cam_y
             
-            # we should use minus here, but since the rays have been through two inversions, we can just use plus here (see line 41)
+            # we should use minus here, but since the rays have been through two inversions, we can just use plus here (see line 45)
             
             # record them
             new_pixels.append([int(u_front), int(v_front)])
