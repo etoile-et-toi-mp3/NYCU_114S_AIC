@@ -8,6 +8,9 @@
 \usepackage{algpseudocode}
 \usepackage{minted}
 \usepackage{graphicx}
+\usepackage{booktabs} % For professional tables
+\usepackage{caption}
+
 \usemintedstyle{xcode} 
 
 \geometry{a4paper, left=2cm, right=2cm, top=2cm, bottom=2cm}
@@ -27,80 +30,81 @@ The 3D scene reconstruction pipeline was implemented using Python, NumPy, and Op
 
 \begin{enumerate}
     \item \textbf{Data Loading \& Depth Quantization Fix:} 
-    The original \texttt{load.py} script compressed continuous depth data into an 8-bit integer format (0-255). This caused severe quantization error, resulting in jagged, stepped walls. I modified the data collection script to save depth as a 16-bit unsigned integer (\texttt{uint16}) multiplied by a scale of 1000.0. This preserved sub-millimeter geometric accuracy and adhered to the specification's \texttt{DEPTH\_SCALE = 1000.0}.
+    The original script was modified to preserve depth as a 16-bit unsigned integer. This preserved sub-millimeter geometric accuracy and adhered to the specification's \texttt{DEPTH\_SCALE = 1000.0}.
 
     \item \textbf{Task 1: Geometric Unprojection:}
-    To convert the RGB-D images into a 3D point cloud, I utilized the Pinhole Camera Model. Instead of using computationally expensive \textit{for-loops}, I optimized the function using \texttt{np.meshgrid} to map the $(u, v)$ coordinates and utilized vectorized NumPy operations to calculate the $(X, Y, Z)$ spatial coordinates instantly. The Y-axis was intentionally inverted (\texttt{-y}) to align the computer vision image space with Habitat's 3D world space.
+    Utilized the Pinhole Camera Model. Instead of using loops, I utilized vectorized NumPy operations with \texttt{np.meshgrid} to map pixel coordinates to $(X, Y, Z)$ spatial coordinates. The Y-axis was inverted to align with Habitat's world space.
 
     \item \textbf{Pre-processing:}
-    Raw point clouds contain over 260,000 points per frame. I applied a Voxel Downsample with a size of \texttt{0.05m} to drastically reduce computation time while preserving critical geometry (corners and edges). I then estimated surface normals (required for Point-to-Plane ICP) and computed Fast Point Feature Histograms (FPFH) to create unique local geometric signatures for global registration.
+    Applied Voxel Downsampling to reduce the point count for registration math. Surface normals were estimated using a KD-Tree search, and Fast Point Feature Histograms (FPFH) were computed to facilitate global registration.
 
     \item \textbf{Registration Pipeline:}
     \begin{itemize}
-        \item \textbf{Global Registration (RANSAC):} Used to find the initial coarse alignment. To combat "Feature Aliasing" in indoor environments (where RANSAC confuses identical flat walls and flips the room), I enforced a \texttt{CorrespondenceCheckerBasedOnNormal}. This strict constraint forced the algorithm to only match points facing the exact same physical direction.
-        \item \textbf{Local Registration (ICP):} Used Open3D's Point-to-Plane ICP to take RANSAC's initial transformation and strictly lock the flat surfaces together using a tight threshold (\texttt{0.05m}) to prevent odometry drift.
+        \item \textbf{Global Registration (RANSAC):} Used to find the initial coarse alignment. I utilized a high iteration count (up to 1.5M) to ensure a high probability of success given low inlier ratios ($\sim$1-3\%) caused by discrete 0.25m agent steps.
+        \item \textbf{Local Registration (ICP):} Used Point-to-Plane ICP with a convergence criteria to refine the RANSAC result, locking planar surfaces together.
     \end{itemize}
 
-    \item \textbf{Post-processing (Dynamic Ceiling Removal):}
-    Instead of hardcoding a ceiling height (which breaks across different floors), I implemented a data-driven approach. The script extracts the Y-coordinates of the upper half of the room and calculates a histogram. The largest density spike in the histogram dynamically identifies the exact height of the ceiling plane, allowing the script to cleanly slice off the roof regardless of the robot's starting elevation.
+    \item \textbf{Post-processing (Ceiling Removal):}
+    Implemented a height-based mask to remove the ceiling for visualization. This is integrated into the evaluation phase rather than the reconstruction phase to maintain the geometric integrity of the raw data.
 \end{enumerate}
 
-\subsection{Result \& Discussion}
+\section{Result \& Discussion}
 
-% % \subsubsection{Screenshots}
-% % Replace 'screenshot.png' with the actual filename of your Floor 1 reconstruction
-% % \begin{figure}[H]
-%     % \centering
-%     % \includegraphics[width=0.8\textwidth]{screenshot.png} 
-%     % \caption{Floor 1 Reconstruction from apartment\_0. The ceiling has been dynamically removed to display the interior layout, and the estimated trajectory (red) closely aligns with the ground truth (black).}
-%     % \label{fig:floor1}
-% % \end{figure}
+\subsection{Screenshots}
+\begin{figure}[H]
+    \centering
+    % Replace with your actual screenshot filename
+    \includegraphics[width=0.8\textwidth]{apartment_0_reconstruction.jpg} 
+    \caption{Floor 1 Reconstruction from apartment\_0. The trajectory spheres (Red: Estimated, Black: Ground Truth) show high alignment accuracy, particularly in the living and dining areas.}
+    \label{fig:floor1}
+\end{figure}
 
-% \subsubsection{Comparison Table}
-% % UPDATE THESE NUMBERS WITH YOUR FINAL TERMINAL OUTPUTS
-% \begin{table}[H]
-% \centering
-% \begin{tabular}{|l|c|c|c|c|c|}
-% \hline
-% \textbf{Experiment} & \textbf{Voxel Size} & \textbf{RANSAC Thresh} & \textbf{ICP Thresh} & \textbf{Mean L2 Error (m)} & \textbf{Time (s)} \\ \hline
-% 1. Baseline (Unoptimized) & 0.25m & 0.375m & 0.375m & $>$ 5.000 & $\approx$ 850.0 \\ \hline
-% 2. High Thresholds & 0.05m & 1.00m & 0.50m & 6.362 & 97.2 \\ \hline
-% 3. Strict Constraints (Final) & 0.05m & 0.25m & 0.05m & \textbf{0.000000} & \textbf{< 60.0} \\ \hline
-% \end{tabular}
-% \caption{Hyperparameter tuning, trajectory error, and execution time across different configurations.}
-% \label{tab:results}
-% \end{table}
+\subsection{Comparison Table}
+The following table summarizes the hyperparameter search conducted to optimize for both Mean L2 Error and execution time.
 
-% \subsubsection{Discussion \& Findings}
-% During the tuning process, I discovered that threshold coupling between RANSAC and ICP causes severe odometry drift. When both thresholds were set too high (Experiment 2), RANSAC suffered from Feature Aliasing—matching featureless hallway walls incorrectly and tilting the camera trajectory into the sky (Y-drift). 
+\begin{table}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tabular}{@{}clccccccc@{}}
+\toprule
+\textbf{Exp \#} & \textbf{Goal / Description} & \textbf{Voxel (m)} & \textbf{RANSAC Iter} & \textbf{Thresh (m)} & \textbf{FPFH nn} & \textbf{Total Points} & \textbf{Mean L2 (m)} & \textbf{Time (s)} \\ \midrule
+0 & Custom (Refined) & 0.04 & 1,500,000 & 0.10 & 100 & 196,933 & \textbf{0.038497} & 81.39 \\
+1 & Baseline & 0.04 & 1,500,000 & 0.10 & 100 & 185,894 & 0.130952 & 176.67 \\
+2 & Resolution vs. Speed & 0.08 & 1,500,000 & 0.20 & 100 & 54,812 & 0.201518 & \textbf{53.00} \\
+3 & Probability Test & 0.04 & 100,000 & 0.10 & 100 & 180,029 & 0.198384 & 80.77 \\
+4 & The "Reach" Test & 0.04 & 1,500,000 & 0.048 & 100 & 177,681 & 0.130922 & 224.23 \\
+5 & Feature Complexity & 0.04 & 1,500,000 & 0.10 & 50 & 197,248 & 0.038534 & 188.64 \\ \bottomrule
+\end{tabular}
+}
+\caption{Hyperparameter tuning, trajectory error, and execution time. Note: Execution times may vary due to system load during parallelized shell execution.}
+\label{tab:results}
+\end{table}
 
-% By decoupling the thresholds, relying on strict Point-to-Point estimation combined with a Normal Checker in the RANSAC step, and applying strict Point-to-Plane evaluation in the ICP step, the pipeline successfully locked the surfaces together. Furthermore, the 16-bit depth fix was critical; without it, quantization errors prevented the ICP algorithm from accurately calculating surface normals, leading to failed planar sliding.
+\subsection{Discussion \& Findings}
+Based on the experimental results, several key insights were identified:
+
+\begin{itemize}
+    \item \textbf{The Iteration Bottleneck (Exp 3):} Reducing RANSAC iterations from 1.5M to 100k caused the Mean L2 Error to jump significantly (from 0.038m to 0.198m). Because the agent's step size in Habitat is 0.25m, the inlier ratio is extremely low ($\approx$1-3\%). Under these conditions, the stochastic nature of RANSAC requires a higher "search budget" to find the correct transformation; otherwise, it converges to local minima.
+    \item \textbf{Voxel Trade-offs (Exp 2):} Increasing the voxel size to 0.08m achieved the fastest execution time (53s), but at a significant cost to accuracy. The coarser geometry makes it difficult for Point-to-Plane ICP to calculate accurate normals, leading to increased odometry drift.
+    \item \textbf{Thresholding (Exp 4):} The "Reach Test" demonstrated that a tight RANSAC threshold (0.048m) makes the system less robust to Habitat's discrete movement. If the threshold is smaller than the noise or the actual jump between frames, RANSAC fails to identify valid correspondences, leading to higher error.
+    \item \textbf{Feature Optimization (Exp 5):} Reducing the FPFH nearest neighbors to 50 maintained high accuracy (0.038m). This suggests that for indoor environments with many planar surfaces, local geometric signatures do not require high neighbor density to remain descriptive.
+\end{itemize}
 
 \section{Questions}
 
 \subsection{What happens if you perform ICP without Global Registration (RANSAC)? Why?}
-% If standard ICP is performed without an initial coarse alignment from RANSAC, the algorithm will frequently fail or converge into a local minimum, resulting in a fractured or overlapping map. 
+If standard ICP is performed without an initial coarse alignment from RANSAC, the algorithm will frequently fail or converge into a local minimum. 
 
-% \textbf{Why:} ICP is a local optimization algorithm; it relies on finding the nearest neighbor for every point to minimize the overall distance. If the camera undergoes a large translation (e.g., Habitat's 0.25m step size) or a rapid rotation, the true corresponding points will fall outside of the ICP search radius. Consequently, ICP will match the source points to the wrong target points (e.g., matching a doorframe to a nearby chair), falsely believing it has minimized the error, and locking the map into an incorrect, disjointed pose.
+\textbf{Why:} ICP is a local optimization algorithm. If the camera undergoes a large translation (0.25m) or rotation, the true corresponding points fall outside of the ICP search radius. Consequently, ICP will match points to the wrong neighbors (e.g., matching a chair leg to a wall), locking the map into an incorrect, disjointed pose. RANSAC is required to provide the "initial guess" that places the point clouds within the convergence basin of the true solution.
 
 \subsection{Describe any tricks used to improve your ICP stability.}
-% Several critical techniques were utilized to prevent drift and guarantee ICP stability:
-% \begin{itemize}
-%     \item \textbf{Point-to-Plane Estimation:} In geometric indoor environments consisting primarily of flat walls and floors, Point-to-Plane ICP performs vastly better than Point-to-Point. It allows the current frame to mathematically slide along the planar surfaces of the previous frame without generating restrictive frictional errors.
-%     \item \textbf{Data Quantization Fix:} Upgrading the raw depth maps from 8-bit to 16-bit integers prevented step-like quantization distortions on the walls. Smooth walls allowed for highly accurate normal vector estimation, which is the foundational requirement for Point-to-Plane stability.
-%     \item \textbf{Voxel Downsampling Optimization:} Setting the voxel size to \texttt{0.05m} filtered out sensor noise while retaining sharp geometric features like corners and doorframes. This prevented the linear system from being overwhelmed by millions of redundant points, ensuring fast, stable convergence.
-% \end{itemize}
+\begin{itemize}
+    \item \textbf{Point-to-Plane Estimation:} In geometric indoor environments, Point-to-Plane ICP allows the current frame to mathematically slide along planar surfaces (walls/floors), preventing the "stuck" behavior often seen in Point-to-Point estimation.
+    \item \textbf{Voxel-Based Normal Estimation:} Using a radius-based normal estimation (2x voxel size) ensures that even with downsampled data, the underlying surface geometry is accurately represented.
+    \item \textbf{Trajectory Visualization:} Representing camera poses as 3D spheres rather than just lines allowed for easier identification of "jumps" or "teleportation" errors during the tuning process.
+\end{itemize}
 
 \end{document}
 
-% If a TA asks you about FPFH, just give them this exact logic:
-
-% The Problem: Raw points and normals look identical on flat surfaces. We need a way to distinguish a corner from a wall.
-
-% The Input: We feed the algorithm a point, its normal vector, and its neighbors.
-
-% The Output: The algorithm returns a 33-dimensional vector (a signature/histogram).
-
-% The Purpose: It acts as an embedding. Highly unique geometry (like a corner) gets a highly unique signature. This allows the RANSAC algorithm to quickly find matching "puzzle pieces" between Frame 1 and Frame 2 without checking every single point.
-
-% That is the absolute deepest you need to go into FPFH.
+% odometry drift: i thought the ceiling is monotonic increasing or someshit
+% why it doubled: look at 0408232714, also at that time, both the RANSAC and ICP inliers are low as fuck, it's because the voxel size is too big and had the wrong proportion for both thresholds

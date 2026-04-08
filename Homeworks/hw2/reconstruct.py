@@ -8,6 +8,7 @@ from copy import deepcopy
 from scipy.spatial.transform import Rotation as R
 import time
 import cv2
+from pathlib import Path
 
 # ---------- Camera Intrinsics (Resolution 512x512, FOV 90) ----------
 # These parameters are derived from the Habitat pinhole camera model.
@@ -93,14 +94,33 @@ def preprocess_point_cloud(pcd, voxel_size):
     
     return pcd_downsampled, pcd_fpfh
 
-def local_icp_algorithm(downsampled_source, downsampled_target, trans_init, threshold):
+def local_icp_algorithm(downsampled_source, downsampled_target, guessed_transform, threshold):
     """
     TASK 2: Open3D ICP Implementation (REQUIRED) 
     """
-    # ICP (Iterative Closest Point) is an algorithm that refines the transformation
+    # ICP (Iterative Closest Point) is an algorithm that refines the RANSAC result
+    # it first transforms the source pcd with the RANSAC result.
+    # Since we are using Point-to-Plane ICP, we want to minimize the distance from
+    # each transformed source point to the normal plane of its nearest neighbor in the target pcd.
+    # Mathematically, minimizing \sum{(d_i . n_i)^2} where d_i is the difference vector from the neighbor to the transformed point, and n_i is the normal of that neighbor.
+    
+    # We add ConvergenceCriteria to prevent ICP from running too many iterations
+    # relative_fitness: stop if the overlap improvement is less than 0.000001
+    # relative_rmse: stop if the error improvement is less than 0.000001
+    # max_iteration: stop after 30 steps (ICP usually converges very fast anyway)
+    criteria = o3d.pipelines.registration.ICPConvergenceCriteria(
+        relative_fitness=1e-6,
+        relative_rmse=1e-6,
+        max_iteration=30 
+    )
+    
     result = o3d.pipelines.registration.registration_icp(
-        downsampled_source, downsampled_target, threshold, trans_init,
-        o3d.pipelines.registration.TransformationEstimationPointToPlane()
+        downsampled_source, 
+        downsampled_target, 
+        threshold, 
+        guessed_transform,
+        o3d.pipelines.registration.TransformationEstimationPointToPlane(),
+        criteria
     )
     return result
 
@@ -122,16 +142,17 @@ def my_local_icp_algorithm(source_pcd, target_pcd, initial_transform):
 
 def reconstruct(args):
     # hardcode variables
-    rgb_dir = os.path.join(args.data_root, "rgb")    
-    rgb_files = sorted(glob.glob(os.path.join(rgb_dir, "*.png")), key=lambda x: int(os.path.basename(x).split('.')[0]))
-    depth_dir = os.path.join(args.data_root, "depth")
-    depth_files = sorted(glob.glob(os.path.join(depth_dir, "*.png")), key=lambda x: int(os.path.basename(x).split('.')[0]))
+    rgb_dir = Path(args.data_root) / "rgb"
+    rgb_files = sorted(rgb_dir.glob("*.png"), key=lambda x: int(x.stem))
+    rgb_files = [str(p) for p in rgb_files]
+    depth_dir = Path(args.data_root) / "depth"
+    depth_files = sorted(depth_dir.glob("*.png"), key=lambda x: int(x.stem))
+    depth_files = [str(p) for p in depth_files]
 
-    voxel_size = 0.05    
-    ransac_threshold = voxel_size * 20  # 1.0 meters: RANSAC needs a wider net to catch fast rotations
-    icp_threshold = 0.5  # 0.5 meters: ICP needs enough room to catch height changes on the stairs
-    distance_threshold = voxel_size * 1.5 # 7.5cm: Both algorithms get a mathematically tight 7.5cm threshold
-    
+    voxel_size = 0.04 # 4cm
+    ransac_threshold = voxel_size * 2.5 # 0.1 meters: RANSAC needs a wider net to catch fast rotations
+    icp_threshold = voxel_size * 1.5 # 0.06 meters: ICP needs enough room to catch height changes on the stairs
+
     # Load Ground Truth Poses
     gt_pose_path = os.path.join(args.data_root, "GT_pose.npy")
     if os.path.exists(gt_pose_path):
@@ -152,7 +173,7 @@ def reconstruct(args):
         mat[:3, 3] = [p[0], p[1], p[2]] # translation part
         gt_poses.append(mat)
         # the gt_data and these poses are all in the simulator's coordinate space
-    gt_poses = np.stack(gt_poses)
+    gt_poses = np.stack(gt_poses) if len(gt_poses) > 0 else np.array([]) # shape (N, 4, 4)
 
     # Initialize the array for our guessed camera poses (also in the simulator's coordinate space) and the accumulated point cloud
     guessed_camera_poses = [gt_poses[0].copy()] if len(gt_poses) > 0 else [np.identity(4)] # yes we leak the GT pose for the first frame, as we need a starting point for the trajectory
@@ -168,7 +189,7 @@ def reconstruct(args):
     downsampled_0_in_global = deepcopy(downsampled_0)
     downsampled_0_in_global.transform(guessed_camera_poses[0]) # Multiplying (x' = mat * x) transforms the point cloud from the camera's local space to the global space
     accumulated_pcd += downsampled_0_in_global
-    # accumulated_pcd = accumulated_pcd.voxel_down_sample(voxel_size) do we need this????
+    accumulated_pcd = accumulated_pcd.voxel_down_sample(voxel_size)
 
     downsampled_prev = downsampled_0
     fpfh_prev = fpfh_0
@@ -183,29 +204,30 @@ def reconstruct(args):
         
         # Use RANSAC (RANdom SAmple Consensus) to calculate a rough transformation between the current frame and the previous frame based on their FPFH embeddings.
         # It first randomly samples 3 points from the prev frame and the current frame that has similar FPFH embeddings,
-        # calculates how to move from the 3 prev points to the 3 current points,
-        # and then checks how many other points in the sight also "match well" with their counterparts after the transformation.
-        # ("Match well": If a point is within distance_threshold of its counterpart after the move, it counts as a "vote" (inlier).
-        # It repeats this process for 100,000 iterations or until it finds a transformation that has 99.9% inliers, and returns the best transformation it found.
+        # calculates how to move from the 3 prev points to the 3 current points (definitely doable in 3D space),
+        # and then checks how many other points in the room also "match well" with this same transformation.
+        # ("Match well": If a transformed point and its nearest neighbor in the new frame is within distance_threshold, this counts as a "vote" (Consensus!).
+        # The points won't be too dense since we voxel downsampled them.
+        # It repeats this process for 1,000,000 iterations or until it finds a transformation that has 99% inliers, and returns the best transformation it found.
         ransac_result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
             downsampled_i, downsampled_prev, fpfh_i, fpfh_prev, True,
-            distance_threshold,
+            ransac_threshold,
             o3d.pipelines.registration.TransformationEstimationPointToPoint(False), # <--- THE TRUE FIX
             3, [
                 o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
-                o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(distance_threshold)
+                o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(ransac_threshold)
             ],
-            o3d.pipelines.registration.RANSACConvergenceCriteria(100000, 0.999)
+            o3d.pipelines.registration.RANSACConvergenceCriteria(1500000, 0.99)
         )
         
-        # Use ICP to better "refine" the transformation between the prev and current frame.
+        # Use ICP to better "refine" the RANSAC transformation.
         # Note that RANSAC is like "taking huge steps, but might be inaccurate", while ICP is like "taking small steps, but more precise".
         # The icp_result is a transformation also, but should be more accurate then the RANSAC result.
         if args.version == 'open3d':
-            icp_result = local_icp_algorithm(downsampled_i, downsampled_prev, ransac_result.transformation, distance_threshold)
+            icp_result = local_icp_algorithm(downsampled_i, downsampled_prev, ransac_result.transformation, icp_threshold)
         else:
             icp_result = my_local_icp_algorithm(downsampled_i, downsampled_prev, ransac_result.transformation)
-            
+        
         # Update guessed_camera_poses and accumulate points
         # New guessed camera pose = the latest guessed camera pose * the better transformation from ICP
         new_guessed_camera_pose = np.dot(guessed_camera_poses[-1], icp_result.transformation)
@@ -220,89 +242,76 @@ def reconstruct(args):
         # prepare for the next loop
         downsampled_prev = downsampled_i
         fpfh_prev = fpfh_i
-
-#     # Post-processing: Removing ceiling
-#     print("Post-processing: Removing ceiling...")
-#     points = np.asarray(accumulated_pcd.points)
-#     colors = np.asarray(accumulated_pcd.colors)
     
-#     # Adjusting ceiling height based on the floor
-#     if args.floor == 1:
-#         ceiling_height = 0.6  # Chops off the Floor 1 roof
-#         # 4 has full ceiling
-#         # 3.8 full ceiling and doubled
-#         # 3.6 full ceiling and doubled
-#         # 3 full ceiling and doubled
-#         # 2.5 full ceiling and doubled
-#         # 2.1 full ceiling and doubled
-#         # 2 full ceiling
-#         # 1.8 doubled and folded
-#         # 1.6 folded acutely
-#         # 1.5 has ceiling, doubled, but not folded
-#         # 1.4 pointing to sky
-#         # 1.3 folded and ceiling
-#         # 1.2 doubled and ceiling
-#         # 1.1 folds
-#         # 1.3 folds
-#         # 1 doubles
-#         # 0.8 doubled, half ceiling, half no
-#         # 0.7 doubled, half ceiling, half no
-#         # 0.6 fine as hell
-#     else:
-#         ceiling_height = 2.6  # Chops off the Floor 2 roof (since it starts higher)
-#         # 3.5 is good
-#         # 3.2 is good
-#         # 3.1 is good
-#         # 3 is good
-#         # 2.8 is good
-#         # 2.7 is good, but the lines are floating
-#         # 2.6 is good, but the lines are floating
-#         # 0.6 got nothing
-        
-#     mask = points[:, 1] < ceiling_height
-    
-#     accumulated_pcd.points = o3d.utility.Vector3dVector(points[mask])
-#     accumulated_pcd.colors = o3d.utility.Vector3dVector(colors[mask])
-    
-#     return accumulated_pcd, guessed_camera_poses, gt_poses
+    print(f"Reconstruction complete. Total points: {len(accumulated_pcd.points)}")
+    return accumulated_pcd, guessed_camera_poses, gt_poses
 
-# def visualize_and_evaluate(reconstructed_pcd, predicted_cam_poses, gt_poses, args):
-#     """
-#     TASK 3: Evaluation & Visualization [cite: 58, 60-61]
-#     """
-#     # Extract just the (x, y, z) coordinates from the 4x4 transformation matrices
-#     pred_xyz = np.array([pose[:3, 3] for pose in predicted_cam_poses])
-#     gt_xyz = np.array([pose[:3, 3] for pose in gt_poses])
+def visualize_and_evaluate(accumulated_pcd, predicted_cam_poses, gt_poses, args):
+    """
+    TASK 3: Evaluation & Visualization
+    """
+    # --- Part 1: Post-processing (Removing Ceiling) ---
+    # Moving this here keeps the reconstruction function focused on geometry
+    print(f"Post-processing: Removing Floor {args.floor} ceiling for better visibility...")
+    points = np.asarray(accumulated_pcd.points)
+    colors = np.asarray(accumulated_pcd.colors)
     
-#     # Make sure we only compare up to the number of frames we actually processed
-#     min_len = min(len(pred_xyz), len(gt_xyz))
-#     pred_xyz = pred_xyz[:min_len]
-#     gt_xyz = gt_xyz[:min_len]
+    # Adjusting ceiling height based on the floor
+    if args.floor == 1:
+        ceiling_height = 0.6  # Chops off the Floor 1 roof
+    else:
+        ceiling_height = 2.6  # Chops off the Floor 2 roof (since it starts higher)
 
-#     # Calculate Mean L2 Distance 
-#     distances = np.linalg.norm(pred_xyz - gt_xyz, axis=1)
-#     mean_l2_error = np.mean(distances)
+    mask = points[:, 1] < ceiling_height
     
-#     print(f"Mean L2 distance: {mean_l2_error:.6f} meters")
+    # Apply the mask to filter out the high Y-values (the roof)
+    accumulated_pcd.points = o3d.utility.Vector3dVector(points[mask])
+    accumulated_pcd.colors = o3d.utility.Vector3dVector(colors[mask])
 
-#     # --- Create LineSets for Visualization ---
-#     lines = [[i, i + 1] for i in range(min_len - 1)]
+    # --- Part 2: Evaluation (L2 Distance) ---
+    pred_xyz = np.array([pose[:3, 3] for pose in predicted_cam_poses]) # yes that syntax only takes the t_x, t_y, t_z
+    gt_xyz = np.array([pose[:3, 3] for pose in gt_poses])
     
-#     # Ground Truth Trajectory (Black) [cite: 60, 64]
-#     gt_lineset = o3d.geometry.LineSet()
-#     gt_lineset.points = o3d.utility.Vector3dVector(gt_xyz)
-#     gt_lineset.lines = o3d.utility.Vector2iVector(lines)
-#     gt_lineset.colors = o3d.utility.Vector3dVector([[0, 0, 0] for _ in range(len(lines))])
+    # Align lengths to avoid index errors if one list is shorter
+    print(f"Predicted trajectory length: {len(pred_xyz)}, Ground Truth trajectory length: {len(gt_xyz)}")
 
-#     # Estimated Trajectory (Red) [cite: 60, 63]
-#     pred_lineset = o3d.geometry.LineSet()
-#     pred_lineset.points = o3d.utility.Vector3dVector(pred_xyz)
-#     pred_lineset.lines = o3d.utility.Vector2iVector(lines)
-#     pred_lineset.colors = o3d.utility.Vector3dVector([[1, 0, 0] for _ in range(len(lines))])
+    # Calculate Mean L2 Distance 
+    distances = np.linalg.norm(pred_xyz - gt_xyz, axis=1) # a list of the length of the error vector for each frame
+    mean_l2_error = np.mean(distances)
+    print(f"Mean L2 distance: {mean_l2_error:.6f} meters")
 
-#     # 3. Visualization
-#     o3d.visualization.draw_geometries([reconstructed_pcd, gt_lineset, pred_lineset], window_name=f"Floor {args.floor} Reconstruction")
-#     return mean_l2_error
+    # --- Part 3: Create LineSets for Trajectories ---
+    lines = [[i, i + 1] for i in range(len(pred_xyz) - 1)]
+    
+    # Linesets (Keep these for the 'path' look)
+    pred_lineset = o3d.geometry.LineSet(
+        points=o3d.utility.Vector3dVector(pred_xyz),
+        lines=o3d.utility.Vector2iVector(lines)
+    )
+    pred_lineset.colors = o3d.utility.Vector3dVector([[1, 0, 0] for _ in range(len(lines))])
+    
+    def create_sphere_trajectory(xyz_list, color):
+        """Helper to create a collection of spheres for poses"""
+        spheres = o3d.geometry.TriangleMesh()
+        for pt in xyz_list[::2]: # [::2] takes every 2nd frame so it's not too crowded
+            sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.03) # Adjust size here
+            sphere.paint_uniform_color(color)
+            sphere.translate(pt)
+            spheres += sphere
+        return spheres
+
+    # Create Spheres (Red for Pred, Black for GT)
+    pred_spheres = create_sphere_trajectory(pred_xyz, [1, 0, 0])
+    gt_spheres = create_sphere_trajectory(gt_xyz, [0, 0, 0])
+
+    # --- Part 4: Visualization ---
+    # We add the spheres to the list
+    o3d.visualization.draw_geometries(
+        [accumulated_pcd, pred_lineset, pred_spheres, gt_spheres], 
+        window_name="Improved Trajectory View"
+    )
+    
+    return mean_l2_error
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -315,6 +324,5 @@ if __name__ == '__main__':
 
     start_time = time.time()
     result_pcd, pred_poses, gt_poses = reconstruct(args)
-    
     print(f"Total execution time: {time.time() - start_time:.2f}s")
-    # visualize_and_evaluate(result_pcd, pred_poses, gt_poses, args)
+    visualize_and_evaluate(result_pcd, pred_poses, gt_poses, args)

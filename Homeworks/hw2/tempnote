@@ -1,0 +1,10 @@
+Using second floor
+
+| Exp # | Goal of Experiment | Voxel Size (m) | RANSAC Iterations | RANSAC Threshold (m) | FPFH max_nn | Total Points | Mean L2 Error (m) | Exec Time (s) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **0** | **my exp** |0.04|1500000|2.5|100|196933|0.038497|81.39
+| **1** | **Baseline** (Current Best) | 0.04 | 1,500,000 | 0.10 | 100|185894|0.130952|176.67|
+| **2** | **Resolution vs. Speed** | 0.08 | 1,500,000 | 0.20 | 100 |54812|0.201518|53.00|
+| **3** | **Probability Test** | 0.04 | 100,000 | 0.10 | 100 |180029|0.198384|80.77|
+| **4** | **The "Reach" Test** | 0.04 | 1,500,000 | 0.048 | 100 |177681|0.130922|224.23|
+| **5** | **Feature Complexity** | 0.04 | 1,500,000 | 0.10 | 50 |197248|0.038534|188.64|
