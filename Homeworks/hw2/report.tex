@@ -130,7 +130,7 @@ solves the resulting system of linear equations using the least-squares method.
         \toprule
             \textbf{Implementation} & \textbf{Mean L2 Error (m)} & \textbf{Exec Time (s)} & \textbf{Reliability} \\ \midrule
             Open3D (\texttt{Point-to-Plane}) & 0.038497 & 81.39 & High \\
-            Custom (\texttt{Point-to-Plane}) & 0.058512 & 93.25 & Moderate \\
+            Custom (\texttt{Point-to-Plane}) & 0.058512 & 93.25 & A bit lower than Open3D \\
         \bottomrule
     \end{tabular}
     \caption{Comparison between Open3D and Custom ICP implementations.}
@@ -145,7 +145,7 @@ It is merely a local optimization algorithm, therefore it's nearly impossible to
 To obtain that initial guess, RANSAC is thus put into use before ICP.
 
 \subsection{Describe any tricks used to improve your ICP stability.}
-To meet the execution time constraints while maintaining sub-decimeter accuracy, 
+To meet the execution time constraints while maintaining accuracy, 
 several optimization and stability techniques were implemented:
 
 \begin{itemize}
