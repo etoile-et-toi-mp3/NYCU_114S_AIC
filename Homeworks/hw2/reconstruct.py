@@ -124,18 +124,70 @@ def local_icp_algorithm(downsampled_source, downsampled_target, guessed_transfor
     )
     return result
 
-def my_local_icp_algorithm(source_pcd, target_pcd, initial_transform):
+def my_local_icp_algorithm(source_pcd, target_pcd, initial_transform, max_iterations=20):
     """
-    TASK 2: Custom ICP Implementation (BONUS 20%) 
-    Implement your own version of Point-to-Plane ICP.
+    Optimized Custom ICP: High speed, slightly lower precision.
     """
     T_global = initial_transform.copy()
     
-    # TODO: Implement the ICP loop:
-    # 1. Find nearest neighbors using target_tree.search_knn_vector_3d
-    # 2. Build the linear system (AtA)x = Atb
-    # 3. Solve for pose update and update T_global
+    # 1. DOWN-SAMPLE AGAIN (The "Speed Secret")
+    # Even if the main loop is 0.04, we sample even fewer points for the math.
+    # 2000 points is plenty for indoor scenes.
+    source_pcd_small = source_pcd.random_down_sample(sampling_ratio=0.1) 
     
+    target_tree = o3d.geometry.KDTreeFlann(target_pcd)
+    target_points = np.asarray(target_pcd.points)
+    target_normals = np.asarray(target_pcd.normals)
+    
+    for i in range(max_iterations):
+        source_temp = deepcopy(source_pcd_small)
+        source_temp.transform(T_global)
+        curr_points = np.asarray(source_temp.points)
+        
+        # Lists to store vectorized data
+        A_list = []
+        b_list = []
+
+        # We still need to find neighbors. 
+        # This loop is faster because len(curr_points) is now small.
+        for p in curr_points:
+            [k, idx, dist_sq] = target_tree.search_knn_vector_3d(p, 1)
+            
+            if k > 0 and dist_sq[0] < 0.0025: # 0.05m threshold
+                q = target_points[idx[0]]
+                n = target_normals[idx[0]]
+                
+                # Cross product p x n
+                c = np.cross(p, n)
+                A_list.append(np.hstack((c, n)))
+                b_list.append(np.dot(q - p, n))
+
+        if len(A_list) < 10: break
+        
+        # 2. VECTORIZED SOLVE (Massive Speedup)
+        A = np.array(A_list)
+        b = np.array(b_list)
+        
+        # Build AtA and Atb in two lines
+        AtA = A.T @ A
+        Atb = A.T @ b
+        
+        try:
+            x = np.linalg.solve(AtA, Atb)
+        except np.linalg.LinAlgError: break
+
+        # 3. FAST UPDATE
+        dR = o3d.geometry.get_rotation_matrix_from_xyz(x[:3])
+        T_delta = np.identity(4)
+        T_delta[:3, :3] = dR
+        T_delta[:3, 3] = x[3:]
+        
+        T_global = T_delta @ T_global
+        
+        # 4. LOOSE TOLERANCE
+        if np.linalg.norm(x) < 1e-3: # Stop if the "nudge" is tiny
+            break
+
     result = o3d.pipelines.registration.RegistrationResult()
     result.transformation = T_global
     return result

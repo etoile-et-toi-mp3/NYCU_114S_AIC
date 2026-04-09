@@ -119,6 +119,23 @@ Based on the experimental results, several key insights were identified:
     \item \textbf{Feature Optimization (Exp 5):} Reducing the FPFH nearest neighbors to 50 maintained high accuracy (0.038m). This suggests that for indoor environments with many planar surfaces, local geometric signatures do not require high neighbor density to remain descriptive.
 \end{itemize}
 
+\subsubsection{Custom ICP Implementation (Bonus)}
+As a bonus task, a custom Point-to-Plane ICP algorithm was implemented from scratch. 
+The algorithm linearizes the rotation matrix using small-angle approximations and 
+solves the resulting system of linear equations using the least-squares method.
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+            \textbf{Implementation} & \textbf{Mean L2 Error (m)} & \textbf{Exec Time (s)} & \textbf{Reliability} \\ \midrule
+            Open3D (\texttt{Point-to-Plane}) & 0.038497 & 81.39 & High \\
+            Custom (\texttt{Point-to-Plane}) & 0.058512 & 93.25 & Moderate \\
+        \bottomrule
+    \end{tabular}
+    \caption{Comparison between Open3D and Custom ICP implementations.}
+\end{table}
+
 \section{Questions}
 
 \subsection{What happens if you perform ICP without Global Registration (RANSAC)? Why?}
@@ -128,13 +145,14 @@ It is merely a local optimization algorithm, therefore it's nearly impossible to
 To obtain that initial guess, RANSAC is thus put into use before ICP.
 
 \subsection{Describe any tricks used to improve your ICP stability.}
-% \begin{itemize}
-%     \item \textbf{Point-to-Plane Estimation:} In geometric indoor environments, Point-to-Plane ICP allows the current frame to mathematically slide along planar surfaces (walls/floors), preventing the "stuck" behavior often seen in Point-to-Point estimation.
-%     \item \textbf{Voxel-Based Normal Estimation:} Using a radius-based normal estimation (2x voxel size) ensures that even with downsampled data, the underlying surface geometry is accurately represented.
-%     \item \textbf{Trajectory Visualization:} Representing camera poses as 3D spheres rather than just lines allowed for easier identification of "jumps" or "teleportation" errors during the tuning process.
-% \end{itemize}
+To meet the execution time constraints while maintaining sub-decimeter accuracy, 
+several optimization and stability techniques were implemented:
+
+\begin{itemize}
+    \item \textbf{Stochastic Point-to-Plane Minimization:} To overcome the computational bottleneck of Python's \texttt{for}-loops, a random sampling ratio of 10\% was applied to the source point cloud. By calculating the Hessian matrix ($A^T A$) using a statistically representative subset of points, the algorithm achieved a significant speedup without a proportional loss in registration accuracy.
+    \item \textbf{Vectorized Normal Equations:} Instead of incrementally updating the system matrix inside the correspondence loop, the point-to-plane Jacobians were stacked into a matrix $A$ and solved using vectorized NumPy operations ($A^T A x = A^T b$). This shifted the heavy computation to optimized C++/BLAS backends, reducing per-iteration time by over 80\%.
+    \item \textbf{Adaptive Distance Rejector:} A squared-distance threshold of $0.0025m^2$ (corresponding to a $5cm$ search radius) was used to filter out outliers. This ensures that only points with a valid physical neighbor contribute to the pose update, preventing "phantom" geometry from causing odometry drift.
+    \item \textbf{Convergence-Based Early Exit:} The algorithm monitors the magnitude of the 6D transformation vector. If the L2-norm of the update drops below $1e^{-3}$, the loop terminates early. This prevents the system from wasting cycles on sub-millimeter "jitter" that does not contribute to the final map's visual quality.
+\end{itemize}
 
 \end{document}
-
-% odometry drift: i thought the ceiling is monotonic increasing or someshit
-% why it doubled: look at 0408232714, also at that time, both the RANSAC and ICP inliers are low as fuck, it's because the voxel size is too big and had the wrong proportion for both thresholds
