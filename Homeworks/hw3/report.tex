@@ -26,7 +26,7 @@
 \section{Implementation}
 
 \subsection{Code explanation}
-My pipeline is composed of several modules, and there four of them I want to dig into:
+My pipeline is composed of several modules, and there are four of them I want to dig into:
 
 \subsubsection{load\_and\_filter\_map()}
 
@@ -57,7 +57,7 @@ The \texttt{load\_and\_filter\_map()} function converts raw 3D point cloud data 
     \item \textbf{Morphological Processing:} I use \texttt{cv2.morphologyEx} with 
     a kernel to fill gaps in the floor map (caused by sparse point cloud data). I also 
     use \texttt{cv2.dilate} on the occupancy map to add a safety margin around obstacles, 
-    ensuring the RRT and therefore the robot does not plan paths too close to walls.
+    ensuring the RRT does not plan paths too close to walls.
 \end{itemize}
 
 \subsubsection{pick\_goal()}
