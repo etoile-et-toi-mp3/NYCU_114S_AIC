@@ -1,13 +1,13 @@
 import cv2
 import numpy as np
-import math
-import random
 from typing import List, Tuple
+
 
 SCALE_FACTOR = 10000.0 / 255.0 # means that we will be in "m" now
 CEILING_COLOR = np.array([8, 255, 214])
 FLOOR_COLOR = np.array([255, 194, 7])
 RESOLUTION = 0.05
+
 
 def load_and_filter_map(point_path: str, color_path: str, height_limit: float = 1.5):
     points = np.load(point_path)
@@ -92,6 +92,7 @@ def load_and_filter_map(point_path: str, color_path: str, height_limit: float = 
     
     return map_img, occupancy_map, floor_map, transform_params
 
+
 def select_start(map_img: np.ndarray) -> Tuple[int, int]:
     """Display map and return user-clicked start coordinate."""
     start_point = []
@@ -119,6 +120,7 @@ def select_start(map_img: np.ndarray) -> Tuple[int, int]:
     cv2.destroyWindow("Select Start")
     return start_point[0]
 
+
 def get_goal_pixels(map_img: np.ndarray, semantic_dict: dict, goal_name: str) -> List[Tuple[int, int]]:
     """function to find all pixels corresponding to the goal object based on color matching."""
 
@@ -138,6 +140,7 @@ def get_goal_pixels(map_img: np.ndarray, semantic_dict: dict, goal_name: str) ->
         raise ValueError(f"No valid pixels found for '{goal_name}'.")
 
     return goal_pixels
+
 
 def find_navigable_goal(object_pixels: List[Tuple[int, int]], occupancy_map: np.ndarray, floor_map: np.ndarray) -> Tuple[int, int]:
     # 1. Calculate the centroid of the object
