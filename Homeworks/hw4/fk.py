@@ -226,7 +226,7 @@ def your_fk(DH_params : dict, q, base_pos) -> np.ndarray:
     1. Multiply classic DH transforms along the kinematic chain.
     2. Collect joint axis/origin in base frame.
     3. Build Jacobian columns with:
-       ``Jv_i = z_i x (p_end - p_i)`` and ``Jw_i = z_i``.
+        ``Jv_i = z_i x (p_end - p_i)`` and ``Jw_i = z_i``.
 
     Example
     -------
@@ -249,22 +249,56 @@ def your_fk(DH_params : dict, q, base_pos) -> np.ndarray:
 
     A = get_matrix_from_pose(base_pose) # a 4x4 matrix, type should be np.ndarray
     jacobian = np.zeros((6, 6)) # a 6x6 matrix, type should be np.ndarray
-
     # -------------------------------------------------------------------------------- #
     # --- TODO: Read the task description                                          --- #
-    # --- Task 1 : Compute Forward-Kinematic and Jacobain of the robot by yourself --- #
+    # --- Task 1 : Compute Forward-Kinematic and Jacobian of the robot by yourself --- #
     # ---          Try to implement `your_fk` function without using any pybullet  --- #
     # ---          API. (20% for accuracy)                                         --- #
     # -------------------------------------------------------------------------------- #
     
-    #### your code ####
-    
+    # T_list stores the transformation matrix from the base to each joint frame.
+    # T_list[0] is the base transformation matrix.
+    T_list = [A]
 
-    # A = ? # may be more than one line
-    # jacobian = ? # may be more than one line
+    for i in range(len(q)):
+        theta = q[i]
+        a = DH_params[i]['a']
+        d = DH_params[i]['d']
+        alpha = DH_params[i]['alpha']
 
-    raise NotImplementedError
-    # hint : 
+        # Classic DH transformation matrix from frame i-1 to frame i
+        ct = np.cos(theta)
+        st = np.sin(theta)
+        ca = np.cos(alpha)
+        sa = np.sin(alpha)
+
+        T_i = np.array([
+            [ct, -st * ca,  st * sa, a * ct],
+            [st,  ct * ca, -ct * sa, a * st],
+            [0,   sa,       ca,      d     ],
+            [0,   0,        0,       1     ]
+        ], dtype=np.float64)
+
+        # Cumulative transformation from base to current joint frame
+        A = A @ T_i
+        T_list.append(A.copy())
+
+    # End-effector position in world frame
+    p_end = A[:3, 3]
+
+    # Construct the 6x6 geometric Jacobian matrix
+    # For revolute joints, column i is [z_{i-1} x (p_end - p_{i-1}); z_{i-1}]
+    # where z_{i-1} and p_{i-1} are the joint axis and origin of frame i-1 in the world frame.
+    for i in range(6):
+        z_prev = T_list[i][:3, 2]
+        p_prev = T_list[i][:3, 3]
+
+        # Linear velocity component (Jv)
+        jacobian[:3, i] = np.cross(z_prev, p_end - p_prev)
+        # Angular velocity component (Jw)
+        jacobian[3:, i] = z_prev
+
+    ###############################################
     # https://automaticaddison.com/the-ultimate-guide-to-jacobian-matrices-for-robotics/
     
     ###############################################
@@ -308,8 +342,24 @@ def score_fk(student_fk_function, headless=False, visualize_pose=False):
     except ImportError as exc:
         raise ImportError("Isaac Sim python modules are not available in current environment.") from exc
 
-    sim_app = SimulationApp({"headless": bool(headless), "width": 1280, "height": 720})
+    # sim_app = SimulationApp({"headless": bool(headless), "width": 1280, "height": 720})
+    
+    # fix that solves gui issue
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+    os.environ.setdefault("NVIDIA_VISIBLE_DEVICES", "0")
+    os.environ.setdefault("OMNI_KIT_ACCEPT_EULA", "Y")
+    os.environ.setdefault("PRIVACY_CONSENT", "Y")
 
+    sim_app = SimulationApp({
+        "headless": bool(headless),
+        "width": 1280,
+        "height": 720,
+        "active_gpu": 0,
+        "physics_gpu": 0,
+        "multi_gpu": False,
+    })
+    # fix that solves gui issue
+    
     try:
         from isaacsim.core.api import World
 

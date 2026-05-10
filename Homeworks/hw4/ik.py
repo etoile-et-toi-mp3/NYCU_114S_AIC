@@ -129,19 +129,49 @@ def your_ik(new_pose : list or tuple or np.ndarray,
     # --- Note : please modify the code in `your_ik` function.                     --- #
     # -------------------------------------------------------------------------------- #
     
-    #### your code ####
+    dh_params = get_ur5_DH_params()
+    target_pos = np.asarray(new_pose[:3])
+    target_quat = np.asarray(new_pose[3:])
+    R_target = R.from_quat(target_quat).as_matrix()
 
-    # TODO: update tmp_q using an iterative optimization loop.
-    # tmp_q = ? # may be more than one line
-    
-    # hint : 
-    # 1. You may use `your_fk` function and jacobian matrix to do this
-    # 2. Be careful when computing the delta x
-    # 3. You may use some hyper parameters (i.e., step rate) in optimization loops
+    step_size = 0.5
+
+    for i in range(max_iters):
+        # 1. Get current pose and Jacobian
+        curr_pose, jacobian = your_fk(dh_params, tmp_q, base_pos)
+        
+        curr_pos = curr_pose[:3]
+        curr_quat = curr_pose[3:]
+        R_curr = R.from_quat(curr_quat).as_matrix()
+
+        # 2. Compute position error
+        pos_error = target_pos - curr_pos
+
+        # 3. Compute orientation error (axis-angle of R_target @ R_curr.T)
+        R_error = R_target @ R_curr.T
+        rot_error_vec = R.from_matrix(R_error).as_rotvec()
+        
+        # 4. Combine into 6D error
+        error_6d = np.concatenate([pos_error, rot_error_vec])
+
+        # 5. Check termination
+        if np.linalg.norm(error_6d) < stop_thresh:
+            break
+
+        # 6. Compute delta_q = pinv(J) @ error
+        # Use a small dampening factor for stability near singularities
+        # delta_q = pinv(jacobian) @ error_6d
+        # Or more simply with pinv from scipy:
+        delta_q = pinv(jacobian) @ error_6d
+
+        # 7. Update tmp_q and clip
+        tmp_q += step_size * delta_q
+        
+        # Joint limits clipping
+        for j in range(6):
+            tmp_q[j] = np.clip(tmp_q[j], joint_limits[j, 0], joint_limits[j, 1])
 
     ###################
-    
-
     return list(tmp_q) # 6 DoF
 
 
@@ -171,7 +201,23 @@ def score_ik(student_ik_function, headless=False):
     except ImportError as exc:
         raise ImportError("Isaac Sim python modules are not available in current environment.") from exc
 
-    sim_app = SimulationApp({"headless": bool(headless), "width": 1280, "height": 720})
+    # sim_app = SimulationApp({"headless": bool(headless), "width": 1280, "height": 720})
+
+    # fix that solves gui issue
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+    os.environ.setdefault("NVIDIA_VISIBLE_DEVICES", "0")
+    os.environ.setdefault("OMNI_KIT_ACCEPT_EULA", "Y")
+    os.environ.setdefault("PRIVACY_CONSENT", "Y")
+
+    sim_app = SimulationApp({
+        "headless": bool(headless),
+        "width": 1280,
+        "height": 720,
+        "active_gpu": 0,
+        "physics_gpu": 0,
+        "multi_gpu": False,
+    })
+    # fix that solves gui issue
 
     try:
 
